@@ -1,0 +1,62 @@
+# Fork build: desktop win-x64 with legacy sidebar (unsigned smoke / manual install).
+#
+# What this is: upstream tag + patches/legacy-layout-sunset.patch, update feed
+# pointed at this fork (see electron-builder.config.ts). No code changes
+# beyond the patch. Run with: gh workflow run fork-legacy-build --ref legacy-sidebar
+name: fork-legacy-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Upstream tag this branch was cut from (informational)"
+        required: false
+        default: "v1.18.30"
+
+jobs:
+  build-win:
+    runs-on: windows-latest
+    env:
+      OPENCODE_CHANNEL: prod
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Prebuild (icons, metainfo, CLI)
+        run: bun ./scripts/prebuild.ts
+        working-directory: packages/desktop
+
+      - name: Build renderer/main
+        run: bun run build
+        working-directory: packages/desktop
+
+      - name: Package (win x64, no publish, unsigned without secrets)
+        run: npx electron-builder --win --publish never --config electron-builder.config.ts
+        working-directory: packages/desktop
+
+      - name: Verify sunset patch made it into the bundle
+        shell: pwsh
+        run: |
+          $asar = "packages/desktop/dist/win-unpacked/resources/app.asar"
+          if (-not (Test-Path $asar)) { throw "app.asar not found at $asar" }
+          $bytes = [System.IO.File]::ReadAllBytes($asar)
+          $text = [System.Text.Encoding]::UTF8.GetString($bytes)
+          if ($text -notmatch "2099") { throw "sunset patch marker (2099) NOT found in bundle" }
+          if ($text -match "new Date\(2026, 8, 14\)") { throw "old sunset date still present in bundle" }
+          Write-Host "bundle OK: sunset patch present, old date gone"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opencode-desktop-win-x64-legacy
+          path: |
+            packages/desktop/dist/*.exe
+            packages/desktop/dist/*.blockmap
+            packages/desktop/dist/latest*.yml
